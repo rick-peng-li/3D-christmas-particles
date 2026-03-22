@@ -225,7 +225,7 @@
             </svg>
             <span>上传照片</span>
         </label>
-        <input type="file" id="file-input" accept="image/*">
+        <input type="file" id="file-input" accept="image/*" multiple>
     </div>
     <video id="webcam-preview" autoplay playsinline muted></video>
     <div id="canvas-container"></div>
@@ -254,6 +254,7 @@
         let handPosition = new THREE.Vector3(); // Store mapped hand position
         const particles = []; // Stores { mesh, treePos, diffusePos, initialRotation }
         let inspectRenderOrder = 1;
+        const INSPECT_TRANSITION_SPEED = 0.08; // Transition speed for photo inspection
         
         // --- Setup Three.js ---
         const container = document.getElementById('canvas-container');
@@ -411,59 +412,68 @@
             const files = e.target.files;
             if (!files.length) return;
 
-            const file = files[0];
-            const reader = new FileReader();
-            reader.onload = (event) => {
-                const img = new Image();
-                img.src = event.target.result;
-                img.onload = () => {
-                    const texture = new THREE.Texture(img);
-                    texture.needsUpdate = true;
-                    
-                    const matPhoto = new THREE.MeshBasicMaterial({ 
-                        map: texture, 
-                        side: THREE.DoubleSide,
-                        transparent: true
-                    });
-                    
-                    const aspect = img.width / img.height;
-                    const height = 2.5;
-                    const width = height * aspect;
-                    const geoPlane = new THREE.PlaneGeometry(width, height);
-                    
-                    const mesh = new THREE.Mesh(geoPlane, matPhoto);
-                    
-                    const t = Math.random();
-                    const angle = t * Math.PI * 20;
-                    const y = t * TREE_HEIGHT;
-                    const r = (1 - t) * TREE_RADIUS + 3;
-                    const x = Math.cos(angle) * r;
-                    const z = Math.sin(angle) * r;
-                    
-                    const treePos = new THREE.Vector3(x, y - TREE_HEIGHT/2, z);
-                    
-                    const diffusePos = new THREE.Vector3(
-                        (Math.random() - 0.5) * SPREAD_RADIUS * 2,
-                        (Math.random() - 0.5) * SPREAD_RADIUS * 2,
-                        (Math.random() - 0.5) * SPREAD_RADIUS * 2
-                    );
+            Array.from(files).forEach((file, index) => {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.src = event.target.result;
+                    img.onload = () => {
+                        const texture = new THREE.Texture(img);
+                        texture.needsUpdate = true;
+                        
+                        const matPhoto = new THREE.MeshBasicMaterial({ 
+                            map: texture, 
+                            side: THREE.DoubleSide,
+                            transparent: true
+                        });
+                        
+                        const aspect = img.width / img.height;
+                        const height = 2.5;
+                        const width = height * aspect;
+                        const geoPlane = new THREE.PlaneGeometry(width, height);
+                        
+                        const mesh = new THREE.Mesh(geoPlane, matPhoto);
+                        
+                        // Distribute photos around the tree with different positions
+                        const t = (index + Math.random()) / (files.length + 1);
+                        const angle = t * Math.PI * 20;
+                        const y = t * TREE_HEIGHT;
+                        const r = (1 - t) * TREE_RADIUS + 3;
+                        const x = Math.cos(angle) * r;
+                        const z = Math.sin(angle) * r;
+                        
+                        const treePos = new THREE.Vector3(x, y - TREE_HEIGHT/2, z);
+                        
+                        const diffusePos = new THREE.Vector3(
+                            (Math.random() - 0.5) * SPREAD_RADIUS * 2,
+                            (Math.random() - 0.5) * SPREAD_RADIUS * 2,
+                            (Math.random() - 0.5) * SPREAD_RADIUS * 2
+                        );
 
-                    mesh.position.copy(treePos);
-                    mesh.lookAt(0, mesh.position.y, 0);
-                    const initialRot = mesh.rotation.clone();
+                        mesh.position.copy(treePos);
+                        mesh.lookAt(0, mesh.position.y, 0);
+                        const initialRot = mesh.rotation.clone();
 
-                    treeGroup.add(mesh);
-                    particles.push({
-                        mesh,
-                        treePos,
-                        diffusePos,
-                        initialRotation: initialRot,
-                        velocity: new THREE.Vector3(),
-                        isPinned: false
-                    });
+                        treeGroup.add(mesh);
+                        particles.push({
+                            mesh,
+                            treePos,
+                            diffusePos,
+                            initialRotation: initialRot,
+                            velocity: new THREE.Vector3(),
+                            isPinned: false,
+                            targetScale: 1.0,
+                            currentScale: 1.0
+                        });
+                    };
                 };
-            };
-            reader.readAsDataURL(file);
+                reader.readAsDataURL(file);
+            });
+            
+            // Show toast for multiple uploads
+            if (files.length > 1) {
+                showToast(`成功上传 ${files.length} 张照片`, 'success');
+            }
         });
 
         // --- Toast Notification ---
@@ -684,7 +694,17 @@
                     grabbedPhoto = photoParticles[randomIndex];
                     grabbedPhoto.isPinned = true;
                     grabbedPhoto.mesh.renderOrder = inspectRenderOrder++;
+                    // Store original position when starting inspection
+                    grabbedPhoto.inspectStartPos = grabbedPhoto.mesh.position.clone();
                 }
+            }
+            
+            // Handle exiting inspect mode - restore photo to original position
+            if (currentState !== 'INSPECT' && lastState === 'INSPECT' && grabbedPhoto) {
+                grabbedPhoto.isPinned = false;
+                // Reset render order
+                grabbedPhoto.mesh.renderOrder = 0;
+                grabbedPhoto = null;
             }
 
             // Particle Movement Logic
@@ -721,15 +741,13 @@
                     }
                 }
 
-                if (p.isPinned) {
-                    p.mesh.position.copy(targetPos);
+                // Smooth transition for position and scale using inspect transition speed
+                if (p.isPinned || (grabbedPhoto === p && !p.isPinned)) {
+                    p.mesh.position.lerp(targetPos, INSPECT_TRANSITION_SPEED);
+                    const s = THREE.MathUtils.lerp(p.mesh.scale.x, targetScale, INSPECT_TRANSITION_SPEED);
+                    p.mesh.scale.set(s, s, s);
                 } else {
                     p.mesh.position.lerp(targetPos, dt);
-                }
-                
-                if (p.isPinned) {
-                    p.mesh.scale.set(targetScale, targetScale, targetScale);
-                } else {
                     const s = THREE.MathUtils.lerp(p.mesh.scale.x, targetScale, dt);
                     p.mesh.scale.set(s, s, s);
                 }
