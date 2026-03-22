@@ -225,7 +225,7 @@
             </svg>
             <span>上传照片</span>
         </label>
-        <input type="file" id="file-input" accept="image/*">
+        <input type="file" id="file-input" accept="image/*" multiple>
     </div>
     <video id="webcam-preview" autoplay playsinline muted></video>
     <div id="canvas-container"></div>
@@ -385,7 +385,8 @@
                     treePos,
                     diffusePos,
                     initialRotation: initialRot,
-                    velocity: new THREE.Vector3()
+                    velocity: new THREE.Vector3(),
+                    transitionType: Math.floor(Math.random() * 4)
                 });
             }
 
@@ -399,7 +400,8 @@
                 treePos: new THREE.Vector3(0, TREE_HEIGHT/2 + 2, 0),
                 diffusePos: new THREE.Vector3(0, SPREAD_RADIUS, 0),
                 initialRotation: new THREE.Euler(),
-                velocity: new THREE.Vector3()
+                velocity: new THREE.Vector3(),
+                transitionType: 0
             });
         }
 
@@ -411,59 +413,63 @@
             const files = e.target.files;
             if (!files.length) return;
 
-            const file = files[0];
-            const reader = new FileReader();
-            reader.onload = (event) => {
-                const img = new Image();
-                img.src = event.target.result;
-                img.onload = () => {
-                    const texture = new THREE.Texture(img);
-                    texture.needsUpdate = true;
-                    
-                    const matPhoto = new THREE.MeshBasicMaterial({ 
-                        map: texture, 
-                        side: THREE.DoubleSide,
-                        transparent: true
-                    });
-                    
-                    const aspect = img.width / img.height;
-                    const height = 2.5;
-                    const width = height * aspect;
-                    const geoPlane = new THREE.PlaneGeometry(width, height);
-                    
-                    const mesh = new THREE.Mesh(geoPlane, matPhoto);
-                    
-                    const t = Math.random();
-                    const angle = t * Math.PI * 20;
-                    const y = t * TREE_HEIGHT;
-                    const r = (1 - t) * TREE_RADIUS + 3;
-                    const x = Math.cos(angle) * r;
-                    const z = Math.sin(angle) * r;
-                    
-                    const treePos = new THREE.Vector3(x, y - TREE_HEIGHT/2, z);
-                    
-                    const diffusePos = new THREE.Vector3(
-                        (Math.random() - 0.5) * SPREAD_RADIUS * 2,
-                        (Math.random() - 0.5) * SPREAD_RADIUS * 2,
-                        (Math.random() - 0.5) * SPREAD_RADIUS * 2
-                    );
+            Array.from(files).forEach((file, fileIndex) => {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.src = event.target.result;
+                    img.onload = () => {
+                        const texture = new THREE.Texture(img);
+                        texture.needsUpdate = true;
+                        
+                        const matPhoto = new THREE.MeshBasicMaterial({ 
+                            map: texture, 
+                            side: THREE.DoubleSide,
+                            transparent: true
+                        });
+                        
+                        const aspect = img.width / img.height;
+                        const height = 2.5;
+                        const width = height * aspect;
+                        const geoPlane = new THREE.PlaneGeometry(width, height);
+                        
+                        const mesh = new THREE.Mesh(geoPlane, matPhoto);
+                        
+                        const t = Math.random();
+                        const angle = t * Math.PI * 20 + Math.random() * Math.PI * 4;
+                        const y = t * TREE_HEIGHT;
+                        const r = (1 - t) * TREE_RADIUS + 3 + Math.random() * 2;
+                        const x = Math.cos(angle) * r;
+                        const z = Math.sin(angle) * r;
+                        
+                        const treePos = new THREE.Vector3(x, y - TREE_HEIGHT/2, z);
+                        
+                        const diffusePos = new THREE.Vector3(
+                            (Math.random() - 0.5) * SPREAD_RADIUS * 2,
+                            (Math.random() - 0.5) * SPREAD_RADIUS * 2,
+                            (Math.random() - 0.5) * SPREAD_RADIUS * 2
+                        );
 
-                    mesh.position.copy(treePos);
-                    mesh.lookAt(0, mesh.position.y, 0);
-                    const initialRot = mesh.rotation.clone();
+                        mesh.position.copy(treePos);
+                        mesh.lookAt(0, mesh.position.y, 0);
+                        const initialRot = mesh.rotation.clone();
 
-                    treeGroup.add(mesh);
-                    particles.push({
-                        mesh,
-                        treePos,
-                        diffusePos,
-                        initialRotation: initialRot,
-                        velocity: new THREE.Vector3(),
-                        isPinned: false
-                    });
+                        treeGroup.add(mesh);
+                        particles.push({
+                            mesh,
+                            treePos,
+                            diffusePos,
+                            initialRotation: initialRot,
+                            velocity: new THREE.Vector3(),
+                            isPinned: false,
+                            transitionType: Math.floor(Math.random() * 4)
+                        });
+                    };
                 };
-            };
-            reader.readAsDataURL(file);
+                reader.readAsDataURL(file);
+            });
+            
+            showToast(`成功上传 ${files.length} 张照片`, 'success');
         });
 
         // --- Toast Notification ---
@@ -686,14 +692,22 @@
                     grabbedPhoto.mesh.renderOrder = inspectRenderOrder++;
                 }
             }
+            
+            // Release photo when exiting INSPECT state
+            if (lastState === 'INSPECT' && currentState !== 'INSPECT' && grabbedPhoto) {
+                grabbedPhoto.isPinned = false;
+                grabbedPhoto = null;
+            }
 
             // Particle Movement Logic
-            const dt = 0.1; // Lerp factor
+            const dt = 0.08;
+            const inspectDt = 0.05;
+            const time = performance.now() * 0.001;
 
             // Dynamic Bloom Logic
-            let targetBloom = 1.2; // Default strength
+            let targetBloom = 1.2;
             if (currentState === 'INSPECT' && grabbedPhoto) {
-                targetBloom = 0.2; // Fade out bloom when inspecting
+                targetBloom = 0.2;
             }
             bloomPass.strength = THREE.MathUtils.lerp(bloomPass.strength, targetBloom, 0.05);
             
@@ -714,27 +728,56 @@
                     p.mesh.lookAt(camera.position); 
                 } else {
                     targetPos = currentState === 'AGGREGATE' ? p.treePos : p.diffusePos;
-                    
-                    if (p.mesh.rotation !== p.initialRotation) {
-                         const qTarget = new THREE.Quaternion().setFromEuler(p.initialRotation);
-                         p.mesh.quaternion.slerp(qTarget, dt);
-                    }
                 }
 
                 if (p.isPinned) {
-                    p.mesh.position.copy(targetPos);
+                    const transitionType = p.transitionType !== undefined ? p.transitionType : 0;
+                    
+                    if (transitionType === 0) {
+                        p.mesh.position.lerp(targetPos, inspectDt);
+                    } else if (transitionType === 1) {
+                        const elasticDt = inspectDt * (1 + Math.sin(time * 3) * 0.3);
+                        p.mesh.position.lerp(targetPos, Math.min(elasticDt, 0.15));
+                    } else if (transitionType === 2) {
+                        p.mesh.position.lerp(targetPos, inspectDt);
+                        const spiralOffset = Math.sin(time * 5) * 0.5;
+                        p.mesh.position.x += spiralOffset * (1 - inspectDt * 10);
+                        p.mesh.position.y += Math.cos(time * 5) * 0.3 * (1 - inspectDt * 10);
+                    } else {
+                        p.mesh.position.lerp(targetPos, inspectDt);
+                    }
+                    
+                    const s = THREE.MathUtils.lerp(p.mesh.scale.x, targetScale, inspectDt);
+                    p.mesh.scale.set(s, s, s);
                 } else {
-                    p.mesh.position.lerp(targetPos, dt);
-                }
-                
-                if (p.isPinned) {
-                    p.mesh.scale.set(targetScale, targetScale, targetScale);
-                } else {
+                    const transitionType = p.transitionType !== undefined ? p.transitionType : 0;
+                    
+                    if (transitionType === 0) {
+                        p.mesh.position.lerp(targetPos, dt);
+                    } else if (transitionType === 1) {
+                        const bounce = Math.abs(Math.sin(time * 2 + p.treePos.x)) * 0.02;
+                        p.mesh.position.lerp(targetPos, dt + bounce);
+                    } else if (transitionType === 2) {
+                        p.mesh.position.lerp(targetPos, dt);
+                        if (currentState === 'AGGREGATE') {
+                            const spiralProgress = 1 - p.mesh.position.distanceTo(targetPos) / 50;
+                            p.mesh.position.x += Math.sin(time * 2 + spiralProgress * 10) * 0.1;
+                            p.mesh.position.z += Math.cos(time * 2 + spiralProgress * 10) * 0.1;
+                        }
+                    } else {
+                        const wave = Math.sin(time * 3 + p.treePos.y * 0.5) * 0.3;
+                        const modifiedTarget = targetPos.clone();
+                        modifiedTarget.y += wave;
+                        p.mesh.position.lerp(modifiedTarget, dt);
+                    }
+                    
                     const s = THREE.MathUtils.lerp(p.mesh.scale.x, targetScale, dt);
                     p.mesh.scale.set(s, s, s);
+                    
+                    const qTarget = new THREE.Quaternion().setFromEuler(p.initialRotation);
+                    p.mesh.quaternion.slerp(qTarget, dt);
                 }
                 
-                // Apply Rotation (for non-inspected)
                 if (currentState === 'DIFFUSE' && !p.isPinned) {
                     p.mesh.rotation.x += 0.01;
                     p.mesh.rotation.y += 0.01;
