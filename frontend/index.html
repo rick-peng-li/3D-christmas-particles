@@ -225,7 +225,7 @@
             </svg>
             <span>上传照片</span>
         </label>
-        <input type="file" id="file-input" accept="image/*">
+        <input type="file" id="file-input" accept="image/*" multiple>
     </div>
     <video id="webcam-preview" autoplay playsinline muted></video>
     <div id="canvas-container"></div>
@@ -254,6 +254,19 @@
         let handPosition = new THREE.Vector3(); // Store mapped hand position
         const particles = []; // Stores { mesh, treePos, diffusePos, initialRotation }
         let inspectRenderOrder = 1;
+        
+        // 图片缩放动画状态
+        let inspectAnimation = {
+            isAnimating: false,
+            progress: 0,
+            startScale: 1,
+            targetScale: 6,
+            startPos: new THREE.Vector3(),
+            targetPos: new THREE.Vector3(),
+            startQuat: new THREE.Quaternion(),
+            isClosing: false,
+            hasFinished: true
+        };
         
         // --- Setup Three.js ---
         const container = document.getElementById('canvas-container');
@@ -408,62 +421,68 @@
         // --- Photo Upload Handling ---
         const fileInput = document.getElementById('file-input');
         fileInput.addEventListener('change', (e) => {
-            const files = e.target.files;
+            const files = Array.from(e.target.files);
             if (!files.length) return;
 
-            const file = files[0];
-            const reader = new FileReader();
-            reader.onload = (event) => {
-                const img = new Image();
-                img.src = event.target.result;
-                img.onload = () => {
-                    const texture = new THREE.Texture(img);
-                    texture.needsUpdate = true;
-                    
-                    const matPhoto = new THREE.MeshBasicMaterial({ 
-                        map: texture, 
-                        side: THREE.DoubleSide,
-                        transparent: true
-                    });
-                    
-                    const aspect = img.width / img.height;
-                    const height = 2.5;
-                    const width = height * aspect;
-                    const geoPlane = new THREE.PlaneGeometry(width, height);
-                    
-                    const mesh = new THREE.Mesh(geoPlane, matPhoto);
-                    
-                    const t = Math.random();
-                    const angle = t * Math.PI * 20;
-                    const y = t * TREE_HEIGHT;
-                    const r = (1 - t) * TREE_RADIUS + 3;
-                    const x = Math.cos(angle) * r;
-                    const z = Math.sin(angle) * r;
-                    
-                    const treePos = new THREE.Vector3(x, y - TREE_HEIGHT/2, z);
-                    
-                    const diffusePos = new THREE.Vector3(
-                        (Math.random() - 0.5) * SPREAD_RADIUS * 2,
-                        (Math.random() - 0.5) * SPREAD_RADIUS * 2,
-                        (Math.random() - 0.5) * SPREAD_RADIUS * 2
-                    );
+            files.forEach((file, index) => {
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    const img = new Image();
+                    img.src = event.target.result;
+                    img.onload = () => {
+                        const texture = new THREE.Texture(img);
+                        texture.needsUpdate = true;
+                        
+                        const matPhoto = new THREE.MeshBasicMaterial({ 
+                            map: texture, 
+                            side: THREE.DoubleSide,
+                            transparent: true
+                        });
+                        
+                        const aspect = img.width / img.height;
+                        const height = 2.5;
+                        const width = height * aspect;
+                        const geoPlane = new THREE.PlaneGeometry(width, height);
+                        
+                        const mesh = new THREE.Mesh(geoPlane, matPhoto);
+                        
+                        // 分散位置，避免重叠
+                        const t = (index % 10 + Math.random()) / 10;
+                        const angle = t * Math.PI * 20 + index * 0.5;
+                        const y = t * TREE_HEIGHT;
+                        const r = (1 - t) * TREE_RADIUS + 3 + (index % 3) * 2;
+                        const x = Math.cos(angle) * r;
+                        const z = Math.sin(angle) * r;
+                        
+                        const treePos = new THREE.Vector3(x, y - TREE_HEIGHT/2, z);
+                        
+                        const diffusePos = new THREE.Vector3(
+                            (Math.random() - 0.5) * SPREAD_RADIUS * 2,
+                            (Math.random() - 0.5) * SPREAD_RADIUS * 2,
+                            (Math.random() - 0.5) * SPREAD_RADIUS * 2
+                        );
 
-                    mesh.position.copy(treePos);
-                    mesh.lookAt(0, mesh.position.y, 0);
-                    const initialRot = mesh.rotation.clone();
+                        mesh.position.copy(treePos);
+                        mesh.lookAt(0, mesh.position.y, 0);
+                        const initialRot = mesh.rotation.clone();
 
-                    treeGroup.add(mesh);
-                    particles.push({
-                        mesh,
-                        treePos,
-                        diffusePos,
-                        initialRotation: initialRot,
-                        velocity: new THREE.Vector3(),
-                        isPinned: false
-                    });
+                        treeGroup.add(mesh);
+                        particles.push({
+                            mesh,
+                            treePos,
+                            diffusePos,
+                            initialRotation: initialRot,
+                            velocity: new THREE.Vector3(),
+                            isPinned: false,
+                            isPhoto: true
+                        });
+                    };
                 };
-            };
-            reader.readAsDataURL(file);
+                reader.readAsDataURL(file);
+            });
+            
+            // 显示上传成功提示
+            showToast(`成功上传 ${files.length} 张照片`, 'success', 3000);
         });
 
         // --- Toast Notification ---
@@ -676,15 +695,51 @@
             stateLabel.style.color = ''; // Clear inline color
 
             // Handle Interaction (Randomly select a photo to inspect)
-            if (currentState === 'INSPECT' && lastState !== 'INSPECT') {
-                const photoParticles = particles.filter(p => p.mesh.geometry.type === 'PlaneGeometry');
+            if (currentState === 'INSPECT' && lastState !== 'INSPECT' && !grabbedPhoto) {
+                const photoParticles = particles.filter(p => p.isPhoto && !p.isPinned);
                 
                 if (photoParticles.length > 0) {
                     const randomIndex = Math.floor(Math.random() * photoParticles.length);
                     grabbedPhoto = photoParticles[randomIndex];
                     grabbedPhoto.isPinned = true;
                     grabbedPhoto.mesh.renderOrder = inspectRenderOrder++;
+                    
+                    // 初始化放大动画
+                    const camDir = new THREE.Vector3();
+                    camera.getWorldDirection(camDir);
+                    const worldTarget = camera.position.clone().add(camDir.multiplyScalar(20));
+                    const targetPos = treeGroup.worldToLocal(worldTarget.clone());
+                    
+                    // 保存当前的旋转（使用 quaternion 更可靠）
+                    const currentQuat = grabbedPhoto.mesh.quaternion.clone();
+                    
+                    inspectAnimation.isAnimating = true;
+                    inspectAnimation.progress = 0;
+                    inspectAnimation.isClosing = false;
+                    inspectAnimation.hasFinished = false;
+                    inspectAnimation.startScale = grabbedPhoto.mesh.scale.x;
+                    inspectAnimation.targetScale = 6;
+                    inspectAnimation.startPos.copy(grabbedPhoto.mesh.position);
+                    inspectAnimation.targetPos.copy(targetPos);
+                    // 保存 quaternion 而不是 Euler，避免万向节锁问题
+                    inspectAnimation.startQuat = currentQuat;
                 }
+            }
+            
+            // 处理从 INSPECT 状态退出（恢复图片）
+            if (currentState !== 'INSPECT' && lastState === 'INSPECT' && grabbedPhoto) {
+                // 初始化关闭动画
+                const currentQuat = grabbedPhoto.mesh.quaternion.clone();
+                
+                inspectAnimation.isAnimating = true;
+                inspectAnimation.progress = 0;
+                inspectAnimation.isClosing = true;
+                inspectAnimation.hasFinished = false;
+                inspectAnimation.startScale = grabbedPhoto.mesh.scale.x;
+                inspectAnimation.targetScale = 1;
+                inspectAnimation.startPos.copy(grabbedPhoto.mesh.position);
+                inspectAnimation.targetPos.copy(grabbedPhoto.treePos);
+                inspectAnimation.startQuat = currentQuat;
             }
 
             // Particle Movement Logic
@@ -697,7 +752,66 @@
             }
             bloomPass.strength = THREE.MathUtils.lerp(bloomPass.strength, targetBloom, 0.05);
             
+            // 更新图片查看动画
+            if (inspectAnimation.isAnimating && grabbedPhoto) {
+                inspectAnimation.progress += 0.03; // 动画速度
+                if (inspectAnimation.progress >= 1) {
+                    inspectAnimation.progress = 1;
+                    inspectAnimation.isAnimating = false;
+                    
+                    // 动画结束后的处理
+                    if (inspectAnimation.isClosing) {
+                        grabbedPhoto.isPinned = false;
+                        grabbedPhoto = null;
+                    }
+                }
+                
+                // 使用 easeOutCubic 缓动函数
+                const t = inspectAnimation.progress;
+                const easeT = 1 - Math.pow(1 - t, 3);
+                
+                // 插值位置
+                grabbedPhoto.mesh.position.lerpVectors(
+                    inspectAnimation.startPos,
+                    inspectAnimation.targetPos,
+                    easeT
+                );
+                
+                // 插值缩放
+                const currentScale = THREE.MathUtils.lerp(
+                    inspectAnimation.startScale,
+                    inspectAnimation.targetScale,
+                    easeT
+                );
+                grabbedPhoto.mesh.scale.set(currentScale, currentScale, currentScale);
+                
+                // 插值旋转（放大时看向相机，恢复时回到初始旋转）
+                if (!inspectAnimation.isClosing) {
+                    // 放大时平滑转向相机
+                    // 使用一个临时的 Object3D 来计算目标旋转，避免直接修改 grabbedPhoto
+                    const tempObj = new THREE.Object3D();
+                    tempObj.position.copy(inspectAnimation.targetPos);
+                    tempObj.lookAt(camera.position);
+                    const targetQuat = tempObj.quaternion.clone();
+                    
+                    grabbedPhoto.mesh.quaternion.slerpQuaternions(inspectAnimation.startQuat, targetQuat, easeT);
+                } else {
+                    // 恢复时平滑转回初始旋转
+                    const targetQuat = new THREE.Quaternion().setFromEuler(grabbedPhoto.initialRotation);
+                    grabbedPhoto.mesh.quaternion.slerpQuaternions(inspectAnimation.startQuat, targetQuat, easeT);
+                }
+            }
+            
             particles.forEach(p => {
+                // 跳过正在动画的图片，以及动画结束后刚刚被 pinned 的图片（让 lookAt 生效一次）
+                if (p === grabbedPhoto && (inspectAnimation.isAnimating || !inspectAnimation.hasFinished)) {
+                    // 动画刚结束时，标记一下让下一帧可以正常更新
+                    if (!inspectAnimation.isAnimating && !inspectAnimation.hasFinished) {
+                        inspectAnimation.hasFinished = true;
+                    }
+                    return;
+                }
+                
                 let targetPos;
                 let targetScale = 1.0;
                 let targetRot = p.initialRotation;
@@ -743,6 +857,48 @@
 
             composer.render();
         }
+
+        // --- Click to Close Inspected Photo ---
+        const raycaster = new THREE.Raycaster();
+        const mouse = new THREE.Vector2();
+        
+        renderer.domElement.addEventListener('click', (event) => {
+            if (!grabbedPhoto || inspectAnimation.isAnimating) return;
+            
+            // 计算鼠标位置
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            
+            raycaster.setFromCamera(mouse, camera);
+            
+            // 检测是否点击了放大的图片
+            const intersects = raycaster.intersectObject(grabbedPhoto.mesh);
+            
+            if (intersects.length > 0) {
+                // 点击了放大的图片，触发关闭动画
+                targetState = 'AGGREGATE';
+                showToast('点击恢复图片', 'info', 1500);
+            } else {
+                // 点击了空白处，也关闭图片
+                targetState = 'AGGREGATE';
+            }
+        });
+        
+        // 添加鼠标样式提示
+        renderer.domElement.addEventListener('mousemove', (event) => {
+            if (!grabbedPhoto) {
+                renderer.domElement.style.cursor = 'default';
+                return;
+            }
+            
+            mouse.x = (event.clientX / window.innerWidth) * 2 - 1;
+            mouse.y = -(event.clientY / window.innerHeight) * 2 + 1;
+            
+            raycaster.setFromCamera(mouse, camera);
+            const intersects = raycaster.intersectObject(grabbedPhoto.mesh);
+            
+            renderer.domElement.style.cursor = intersects.length > 0 ? 'pointer' : 'default';
+        });
 
         // --- Init ---
         window.addEventListener('resize', () => {
